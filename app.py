@@ -1,23 +1,24 @@
 #!/usr/bin/env python2
+
 import os
 import re
 import time
+import shlex
 from bottle import route, template, request, static_file, redirect, response, default_app, hook
 import config
 import preferences
 import structured_metrics
 from graphs import Graphs
-from backend import Backend, MetricsError, get_action_on_rules_match
+from backend import Backend, get_action_on_rules_match
 import logging
+
 
 # contains all errors as key:(title,msg) items.
 # will be used throughout the runtime to track all encountered errors
 errors = {}
 
 # will contain the latest data
-targets_all = None
 last_update = None
-targets_all_cache_file_mtime = None
 
 logger = logging.getLogger('app')
 logger.setLevel(logging.DEBUG)
@@ -32,68 +33,22 @@ if config.log_file:
 
 logger.debug('app starting')
 backend = Backend(config)
-s_metrics = structured_metrics.StructuredMetrics()
+s_metrics = structured_metrics.StructuredMetrics(config)
 graphs = Graphs()
 graphs.load_plugins()
 graphs_all = graphs.list_graphs()
-
-
-@hook('before_request')
-def assure_files():
-    ignore = ['/timeserieswidget', '/assets']
-    for i in ignore:
-        if request.fullpath.startswith(i):
-            return
-
-    # we could really use an atomic lock on this function, the index page
-    # calls the graphs page -> 2 http requests very close to each other. we
-    # don't want to run this twice if once is fine.
-    if not is_data_latest():
-        try:
-            load_data()
-        except (IOError, EOFError):
-            # pickle file not complete yet
-            pass
-
-
-def load_data():
-    global targets_all
-    global last_update
-    global targets_all_cache_file_mtime
-    logger.debug('load_data() start')
-    try:
-        targets_all = backend.load_data()
-        targets_all_cache_file_mtime = os.path.getmtime(config.targets_all_cache_file)
-        last_update = time.time()
-        logger.debug('load_data() end ok')
-    except MetricsError, e:
-        errors['metrics_file'] = (e.msg, e.underlying_error)
-        logger.error("[%s] %s", e.msg, e.underlying_error)
-        logger.error('load_data() failed')
-
-
-def is_data_latest():
-    global targets_all_cache_file_mtime
-    if targets_all_cache_file_mtime is None:
-        return False
-    if os.path.getmtime(config.targets_all_cache_file) != targets_all_cache_file_mtime:
-        return False
-    return True
-
-
-def is_data_loaded():
-    return (targets_all is not None)
 
 
 def parse_query(query_str):
     query = {
         'patterns': [],
         'group_by': ['target_type=', 'what=', 'server'],
-        'sum_by': []
+        'sum_by': [],
+        'avg_by': [],
     }
-
     # for a call like ('foo bar baz quux', 'bar ', 'baz', 'def')
     # returns ('foo quux', 'baz') or the original query and the default val if no match
+
     def parse_out_value(query_str, predicate_match, value_match, value_default):
         match = re.search('(%s%s)' % (predicate_match, value_match), query_str)
         value = value_default
@@ -111,6 +66,7 @@ def parse_query(query_str):
     (query_str, group_by_str) = parse_out_value(query_str, 'GROUP BY ', '[^ ]+', None)
     (query_str, extra_group_by_str) = parse_out_value(query_str, 'group by ', '[^ ]+', None)
     (query_str, sum_by_str) = parse_out_value(query_str, 'sum by ', '[^ ]+', None)
+    (query_str, avg_by_str) = parse_out_value(query_str, 'avg by ', '[^ ]+', None)
     if group_by_str is not None:
         query['group_by'] = group_by_str.split(',')
     elif extra_group_by_str is not None:
@@ -118,6 +74,16 @@ def parse_query(query_str):
         query['group_by'].extend(extra_group_by_str.split(','))
     if sum_by_str is not None:
         query['sum_by'] = sum_by_str.split(',')
+        # We must remove tag from the groupby if used as an aggregate.
+        for tag in query['sum_by']:
+            if tag in query['group_by']:
+                query['group_by'].remove(tag)
+    if avg_by_str is not None:
+        query['avg_by'] = avg_by_str.split(',')
+        # We must remove tag from the groupby if used as an aggregate.
+        for tag in query['avg_by']:
+            if tag in query['group_by']:
+                query['group_by'].remove(tag)
     for tag in query['group_by']:
         if tag.endswith('='):
             query['patterns'].append(tag)
@@ -126,7 +92,7 @@ def parse_query(query_str):
 
     # split query_str into multiple patterns which are all matched independently
     # this allows you write patterns in any order, and also makes it easy to use negations
-    query['patterns'] += query_str.split()
+    query['patterns'] += shlex.split(query_str, comments=True)
     return query
 
 
@@ -179,28 +145,7 @@ def match_pattern(id, data, pattern):
 # if you use tags, make sure data['tags'] is a dict of tags or this'll blow up
 # if graph, ignores patterns that only apply for targets (tag matching on target_type, what)
 def match(objects, query, graph=False):
-    # prepare higher performing query structure
-    # note that if you have twice the exact same "word" (ignoring leading '!'), the last one wins
-    patterns = {}
-    for pattern in query['patterns']:
-        negate = False
-        if pattern.startswith('!'):
-            negate = True
-            pattern = pattern[1:]
-        patterns[pattern] = {'negate': negate}
-        if '=' in pattern:
-            if not graph or pattern not in ('target_type=', 'what='):
-                patterns[pattern]['match_tag_equality'] = pattern.split('=')
-            else:
-                del patterns[pattern]
-        elif ':' in pattern:
-            if not graph or pattern not in ('target_type:', 'what:'):
-                patterns[pattern]['match_tag_regex'] = pattern.split(':')
-            else:
-                del patterns[pattern]
-        else:
-            patterns[pattern]['match_id_regex'] = re.compile(pattern)
-
+    patterns = structured_metrics.parse_patterns(query)
     objects_matching = {}
     for (id, data) in objects.items():
         match_o = True
@@ -269,19 +214,12 @@ def meta():
     return render_page(body, 'meta')
 
 
-# accepts comma separated list of regexes,
-# any metric matching one of the regexes will be shown
-@route('/inspect/<regexes>')
-def inspect_metric(regexes=''):
-    targets = {}
-    match_objects = [re.compile(regex) for regex in regexes.split(',')]
-    for k, v in targets_all.items():
-        for m_o in match_objects:
-            match = m_o.search(v['graphite_metric'])
-            if match is not None:
-                targets[k] = v
+# accepts comma separated list of metric_id's
+@route('/inspect/<metrics>')
+def inspect_metric(metrics=''):
+    metrics = map(s_metrics.load_metric, metrics.split(','))
     args = {'errors': errors,
-            'targets': targets,
+            'metrics': metrics,
             }
     body = template('templates/body.inspect', args)
     return render_page(body, 'inspect')
@@ -293,19 +231,15 @@ def view_debug(query=''):
     if 'metrics_file' in errors:
         body = template('templates/snippet.errors', errors=errors)
         return render_page(body, 'debug')
-    if not is_data_loaded():
-        return "server is waiting until structured metrics dataset is ready. can't continue"
     if query:
         query = parse_query(query)
-        targets_matching = match(targets_all, query)
+        targets_matching = s_metrics.matching(query)
         graphs_matching = match(graphs_all, query, True)
         graphs_targets, graphs_targets_options = build_graphs_from_targets(targets_matching, query)
         targets = targets_matching
         graphs = graphs_matching
     else:
-        graphs_targets, graphs_targets_options = build_graphs_from_targets(targets_all)
-        targets = targets_all
-        graphs = graphs_all
+        return "Not implemented. TODO time to deprecate this?"
 
     args = {'errors': errors,
             'targets': targets,
@@ -320,12 +254,10 @@ def view_debug(query=''):
 @route('/debug/metrics')
 def debug_metrics():
     response.content_type = 'text/plain'
-    if not is_data_loaded():
-        return "server is waiting until structured metrics dataset is ready. can't continue"
     if 'metrics_file' in errors:
         response.status = 500
         return errors
-    return "\n".join([v['graphite_metric'] for v in sorted(targets_all.values())])
+    return "\n".join(sorted(s_metrics.list_metric_ids()))
 
 
 def build_graphs(graphs, query={}):
@@ -339,6 +271,7 @@ def build_graphs(graphs, query={}):
     for (k, v) in graphs.items():
         v.update(query)
     return graphs
+
 
 def graphs_limit_targets(graphs, limit):
     targets_used = 0
@@ -360,11 +293,23 @@ def graphs_limit_targets(graphs, limit):
     return graphs
 
 
+def graphite_func_aggregate(targets, query, aggfunc):
+    t = {
+        'target': '%s(%s)' % (aggfunc, ','.join([t['target'] for t in targets])),
+        'graphite_metric': [t['graphite_metric'] for t in targets],
+        'variables': targets[0]['variables']
+    }
+    for s_b in query:
+        t['variables'][s_b] = '%s (%s values)' % (aggfunc, len(targets))
+    return t
+
+
 def build_graphs_from_targets(targets, query={}):
     # merge default options..
     defaults = {
         'group_by': [],
         'sum_by': [],
+        'avg_by': [],
         'from': '-24hours',
         'to': 'now',
         'statement': 'graph',
@@ -376,6 +321,7 @@ def build_graphs_from_targets(targets, query={}):
         return (graphs, query)
     group_by = query['group_by']
     sum_by = query['sum_by']
+    avg_by = query['avg_by']
     # for each combination of values of tags from group_by, make 1 graph with
     # all targets that have these values. so for each graph, we have:
     # the "constants": tags in the group_by
@@ -398,19 +344,22 @@ def build_graphs_from_targets(targets, query={}):
         # set all options needed for timeserieswidget/flot:
         t = {
             'variables': variables,
-            'graphite_metric': target_data['graphite_metric'],
-            'target': target_data['target']
+            'graphite_metric': target_data['id'],
+            'target': target_data['id']
         }
         if 'color' in target_data:
             t['color'] = target_data['color']
         graphs[graph_key]['targets'].append(t)
 
     # sum targets together if appropriate
-    if len(query['sum_by']):
+    if (sum_by or avg_by):
         for (graph_key, graph_config) in graphs.items():
             graph_config['targets_sum_candidates'] = {}
+            graph_config['targets_avg_candidates'] = {}
             graph_config['normal_targets'] = []
-            for target in graph_config['targets']:
+            all_targets = graph_config['targets'][:]  # Get a copy
+
+            for target in all_targets:
                 # targets that can get summed together with other tags, must
                 # have at least 1 'sum_by' tags in the variables list.
                 # targets that can get summed together must have:
@@ -419,30 +368,51 @@ def build_graphs_from_targets(targets, query={}):
                 # are being summed by.
                 # so for every group of sum_by tags and variables we build a
                 # list of targets that can be summed together
-                sum_constants = set(query['sum_by']).intersection(set(target['variables'].keys()))
-                if(sum_constants):
+                variables = target['variables'].keys()
+                sum_constants = set(sum_by).intersection(set(variables))
+                if sum_constants:
                     sum_constants_str = '_'.join(sorted(sum_constants))
-                    variables_str = '_'.join(['%s_%s' % (k, target['variables'][k]) for k in sorted(target['variables'].keys()) if k not in sum_constants])
+                    variables_str = '_'.join(
+                        ['%s_%s' % (k, target['variables'][k]) \
+                            for k in sorted(variables) \
+                            if k not in sum_constants])
                     sum_id = '%s__%s' % (sum_constants_str, variables_str)
-                    if sum_id not in graphs[graph_key]['targets_sum_candidates']:
+                    if sum_id not in graph_config['targets_sum_candidates']:
                         graphs[graph_key]['targets_sum_candidates'][sum_id] = []
-                    graphs[graph_key]['targets_sum_candidates'][sum_id].append(target)
-                else:
-                    graph_config['normal_targets'].append(target)
-            graph_config['targets'] = graph_config['normal_targets']
-            for (sum_id, targets) in graphs[graph_key]['targets_sum_candidates'].items():
-                if (len(targets) == 1):
-                    graph_config['targets'].append(targets[0])
-                else:
-                    t = {
-                        'target': 'sumSeries(%s)' % (','.join([t['graphite_metric'] for t in targets])),
-                        'graphite_metric': [t['graphite_metric'] for t in targets],
-                        'variables': targets[0]['variables']
-                    }
-                    for s_b in sum_by:
-                        t['variables'][s_b] = 'multi (%s values)' % len(targets)
+                    graph_config['targets_sum_candidates'][sum_id].append(target)
 
-                    graph_config['targets'].append(t)
+            for (sum_id, targets) in graph_config['targets_sum_candidates'].items():
+                if len(targets) > 1:
+                    for t in targets:
+                        all_targets.remove(t)
+                    all_targets.append(
+                        graphite_func_aggregate(targets, sum_by, "sumSeries"))
+
+            for target in all_targets:
+                # Now, if we combine average and sum, we must process average
+                # based on sum targets.
+                # If we don't find any avg target match, just add plain sum targets.
+                variables = target['variables'].keys()
+                avg_constants = set(avg_by).intersection(set(variables))
+                if avg_constants:
+                    avg_constants_str = '_'.join(sorted(avg_constants))
+                    variables_str = '_'.join(
+                        ['%s_%s' % (k, target['variables'][k]) \
+                            for k in sorted(variables) \
+                            if k not in avg_constants])
+                    avg_id = '%s__%s' % (avg_constants_str, variables_str)
+                    if avg_id not in graph_config['targets_avg_candidates']:
+                        graph_config['targets_avg_candidates'][avg_id] = []
+                    graph_config['targets_avg_candidates'][avg_id].append(target)
+
+            for (avg_id, targets) in graph_config['targets_avg_candidates'].items():
+                if len(targets) > 1:
+                    for t in targets:
+                        all_targets.remove(t)
+                    all_targets.append(
+                        graphite_func_aggregate(targets, avg_by, "averageSeries"))
+
+            graph_config["targets"] = all_targets
 
     # remove targets/graphs over the limit
     graphs = graphs_limit_targets(graphs, query['limit_targets'])
@@ -506,17 +476,15 @@ def graphs(query=''):
         query = request.forms.get('query')
     if not query:
         return template('templates/graphs', query=query, errors=errors)
-    if not is_data_loaded():
-        return "server is waiting until structured metrics dataset is ready. can't continue"
     query = parse_query(query)
     tags = set()
-    targets_matching = match(targets_all, query)
+    targets_matching = s_metrics.matching(query)
     for target in targets_matching.values():
         for tag_name in target['tags'].keys():
             tags.add(tag_name)
     graphs_matching = match(graphs_all, query, True)
     graphs_matching = build_graphs(graphs_matching, query)
-    stats = {'len_targets_all': len(targets_all),
+    stats = {'len_targets_all': s_metrics.count_metrics(),
              'len_graphs_all': len(graphs_all),
              'len_targets_matching': len(targets_matching),
              'len_graphs_matching': len(graphs_matching),

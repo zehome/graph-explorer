@@ -1,9 +1,13 @@
 tags_order_pre = ['what', 'type', 'target_type'];
 tags_order_post = ['server', 'plugin'];
+
 function display_tag(tag_name, tag_value) {
+    // tag_value can contain HTML strings which are not wanted here.
+    // We must escape them.
+    escaped_tag_value = $('<div/>').text(tag_value).html();
     // at some point it'll probably make sense to make the background color the inverse of the foreground color
     // cause there'll be so many foreground colors that are not always visible on any particular background.
-    return "<span class='label' title='" + tag_name + "' style='color:#" + colormap[tag_name] +"; background-color:#333;'>" + tag_value + "</span>";
+    return "<span class='label' title='" + tag_name + "' style='color:#" + colormap[tag_name] +"; background-color:#333;'>" + escaped_tag_value + "</span>";
 }
 function display_word(word) {
     // word can be anything. a misc. string, a tag, a <tag>:, !<tag>=, etc
@@ -95,9 +99,9 @@ function create_colormap(tags) {
 function get_inspect_url(data, name) {
     var q;
     if($.isArray(data['graphite_metric'])) {
-        q = '^' + data['graphite_metric'].join('$|^') + '$';
+        q = data['graphite_metric'].join(',');
     } else {
-        q = '^' + data['graphite_metric'] + '$';
+        q = data['graphite_metric'];
     }
     return "<a href='/inspect/" + q +"'>" + name + "</a>";
 }

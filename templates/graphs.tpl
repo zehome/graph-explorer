@@ -15,12 +15,14 @@
         $("#patterns").html(generate_pattern_display({{!list(query['patterns'])}}));
         $("#group_by").html(generate_pattern_display({{!list(query['group_by'])}}));
         $("#sum_by").html(generate_pattern_display({{!list(query['sum_by'])}}));
+        $("#avg_by").html(generate_pattern_display({{!list(query['avg_by'])}}));
         </script>
             Tag legend: <span id="tag_legend"></span><br/>
             <br/>
             Patterns: <span id="patterns"></span><br/>
             Group by: <span id="group_by"></span><br/>
             Sum by: <span id="sum_by"></span><br/>
+            Avg by: <span id="avg_by"></span><br/>
             From: {{query['from']}}<br/>
             To: {{query['to']}}<br/>
             Limit: {{query['limit_targets']}}<br/>
@@ -34,7 +36,7 @@
         % end
         <!-- approximation of get_inspect_url(data, name) that works as long as list mode doesn't support sum by (or other kind of N metrics in 1 target) -->
         % for target_id in targets_list.iterkeys():
-            <a href="/inspect/^{{targets_list[target_id]['graphite_metric']}}$">{{target_id}}</a></br>
+            <a href="/inspect/{{targets_list[target_id]['graphite_metric']}}">{{target_id}}</a></br>
         % end
     % end
 % else:
