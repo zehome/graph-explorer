@@ -127,7 +127,7 @@ def parse_query(query_str):
 
     # split query_str into multiple patterns which are all matched independently
     # this allows you write patterns in any order, and also makes it easy to use negations
-    query['patterns'] += shlex.split(query_str)
+    query['patterns'] += shlex.split(query_str, comments=True)
     return query
 
 
