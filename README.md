@@ -25,6 +25,7 @@ Graph-explorer's plugins define rules which match metric names, parse them and y
 
 * tags from fields in the metric name (server, service, interface_name, etc) by using named groups in a regex.  (there's some guidelines for tags, see below)
 * target_type (count, rate, gauge, ...)
+* unit (MB, queries/s, ...)
 * plugin (i.e. 'cpu')
 * the graphite target (often just the metric name, but you can use the [graphite functions](http://graphite.readthedocs.org/en/1.0/functions.html) like `derivative`, `scale()` etc.
 
@@ -43,6 +44,7 @@ Try to use standardized nomenclature in target types and tags.  Do pretty much w
 * count: a number per a given interval (such as a statsd flushInterval)
 * gauge: values at each point in time
 * counter: a number that keeps increasing over time (but might wrap/reset at some points) (no statsd counterpart) (you'll probably also want to yield this as a rate with `derivative()`)
+* timestamp: value represents a unix timestamp. so basically a gauge or counter but we know we can also render the "age" at each point.
 * timing: TBD
 
 other words you might use are `pct` (percent), `http_method`, `device`, etc.  Also, keep everything in lowercase, that just keeps things easy when matching.
@@ -53,7 +55,7 @@ tag definitions:
 "type": extra info. i.e. if what is errors, this can be 'in'. if what is requests, this can be '404'. sometimes you may want to put multiple words here, and that's ok (but consider creating new tags for those)
 "wt": often a metric path will contain one key that has info on both the "what" and "type", "wt" is commonly used to catch it, so you can sanitize it (see below)
 
-all metrics must have a 'target_type' and a 'what'. because otherwise they are meaningless, also because they are used in the default group_by (TODO: show warnings if not)
+all metrics must have a unit tag. because otherwise they are meaningless, also because they are used in the default group_by (TODO: show warnings if not)
 
 sanitization
 the process of properly setting "what" and "type" tags from a "wt" tag and deleting the "wt" tag again.
@@ -86,7 +88,7 @@ the Graphite Query Language is a language designed to:
   * `:<val>`      : a tag with value matching regex `<val>` must exist
   * `<key>:`      : a tag with key matching regex `<key>` must exist
   * `<key>:<val>` : a tag with key `<key>` must exist and its value must match the regex `<val>`
-* any other pattern is treated as a regular expression, which must match the target name.
+* any other pattern is treated as a regular expression and gets matched on the metric as well as tags.
 * matching targets are collected, grouped into graphs and rendered
 
 note:
@@ -113,8 +115,8 @@ this statement goes in the beginning of the query.
 `<tagspec>` is a list like so: `foo[=][,bar[=][,baz[=][...]]]`
 basically a comma-separated list of tags with optional '=' suffix to denote soft or hard (see below).
 
-by default, grouping is by `target_type=`, `what=` and `server`.
-The tags `target_type` and `what` are strong, meaning a `<tag>=` pattern is added to the query so that only targets are shown that have the tag.
+by default, grouping is by `unit=` and `server`.
+The tags `unit` is strong, meaning a `<tag>=` pattern is added to the query so that only targets are shown that have the tag.
 The tag `server` is soft so that no pattern is added, and targets without this tag will show up too.
 
 You can affect this in two ways:
@@ -192,6 +194,8 @@ limit returned targets (to avoid killing you browser and/or graphite server). 0 
 ## Dependencies
 
 * python2: either 2.6 or higher, or 2.5 and the additional simplejson module
+* an elasticsearch (see https://github.com/vimeo/carbon-tagger#installation, run the ./recreate_index.sh script)
+* pytz for rawes(elasticsearch) (TODO: we can probably avoid this)
 
 ## Installation
 
@@ -204,14 +208,9 @@ This will give you the latest bleeding edge code (master branch), which can be a
 You can use a "release" by checking out one of the tags:
 
 * 2013.06.13
-  * moved static graph defs (for those who use em) from structured metrics in to separate graph plugins
-  * add experimental shortcut functions for easier defining targets
-  * add `sum by` support
-  * better support for multiple (gunicorn or other) workers
-  * perf tweak: compute structured metrics in a separate process that builds cache files which the app just reloads
 * 2013.04.19
-  * first stable release
 
+[release documentation page](https://github.com/vimeo/graph-explorer/releases)
 
 ## Configuration of graph-explorer
 
@@ -221,7 +220,7 @@ $EDITOR config.py
 # if you want annotated events using [anthracite](https://github.com/Dieterbe/anthracite) set `anthracite_url`
 # run update_metrics.py (protip: use cron), this downloads metrics.json and builds the enhanced metrics (tag datastructures).
 */20 * * * * /path/to/graph-explorer/update_metrics.py &>/dev/null
-(note, if you have a lot of metrics, this can take a while. takes 5minutes on my 80k metrics)
+(note, if you have a lot of metrics, this can take a while. takes 10minutes on my 150k metrics. there's some low hanging optimisation fruit there though)
 ```
 
 ## Configuration of graphite server
