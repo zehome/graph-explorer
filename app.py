@@ -70,8 +70,16 @@ def parse_query(query_str):
         query['group_by'].extend(extra_group_by_str.split(','))
     if sum_by_str is not None:
         query['sum_by'] = sum_by_str.split(',')
+        # We must remove tag from the groupby if used as an aggregate.
+        for tag in query['sum_by']:
+            if tag in query['group_by']:
+                query['group_by'].remove(tag)
     if avg_by_str is not None:
         query['avg_by'] = avg_by_str.split(',')
+        # We must remove tag from the groupby if used as an aggregate.
+        for tag in query['avg_by']:
+            if tag in query['group_by']:
+                query['group_by'].remove(tag)
     for tag in query['group_by']:
         if tag.endswith('='):
             query['patterns'].append(tag)
