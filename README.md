@@ -147,6 +147,15 @@ causes all the targets on every graph to be summed together by these tags, and s
 (no effect in 'list' mode)
 
 
+### avg by `<tagspec>`
+
+`<tagspec>` is a list like so: `foo[,bar][...]`
+
+causes all the targets on every graph to be aggregated, then averaged together by these tags. Their other tags must have the same value.
+can be used on top of sum by. (Example: averageSeries(sumSeries(test.web1.latency.sql, test.web1.latency.template), sumSeries(test.web2.latency.sql, test.web2.latency.template)))
+(no effect in 'list' mode)
+
+
 ### from `<word>`
 
 default: '-24hours'.  
