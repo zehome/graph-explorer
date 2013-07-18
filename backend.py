@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+
 try:
     import json
 except ImportError:
@@ -6,8 +7,11 @@ except ImportError:
         import simplejson as json
     except ImportError:
         raise ImportError("GE requires python2, 2.6 or higher, or 2.5 with simplejson.")
+
 import os
 import logging
+import urllib2
+import urlparse
 
 
 class MetricsError(Exception):
@@ -26,8 +30,7 @@ class Backend(object):
         self.logger = logger
 
     def download_metrics_json(self):
-        import urllib2
-        response = urllib2.urlopen("%s/metrics/index.json" % self.config.graphite_url)
+        response = urllib2.urlopen(self.config.graphite_url_metrics)
         m = open('%s.tmp' % self.config.filename_metrics, 'w')
         m.write(response.read())
         m.close()
