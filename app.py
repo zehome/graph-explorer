@@ -1,7 +1,9 @@
 #!/usr/bin/env python2
+
 import os
 import re
 import time
+import shlex
 from bottle import route, template, request, static_file, redirect, response, default_app, hook
 import config
 import preferences
@@ -91,7 +93,6 @@ def parse_query(query_str):
         'group_by': ['target_type=', 'what=', 'server'],
         'sum_by': []
     }
-
     # for a call like ('foo bar baz quux', 'bar ', 'baz', 'def')
     # returns ('foo quux', 'baz') or the original query and the default val if no match
     def parse_out_value(query_str, predicate_match, value_match, value_default):
@@ -126,7 +127,7 @@ def parse_query(query_str):
 
     # split query_str into multiple patterns which are all matched independently
     # this allows you write patterns in any order, and also makes it easy to use negations
-    query['patterns'] += query_str.split()
+    query['patterns'] += shlex.split(query_str)
     return query
 
 
