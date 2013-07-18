@@ -39,7 +39,8 @@ def parse_query(query_str):
     query = {
         'patterns': [],
         'group_by': ['target_type=', 'what=', 'server'],
-        'sum_by': []
+        'sum_by': [],
+        'avg_by': [],
     }
 
     # for a call like ('foo bar baz quux', 'bar ', 'baz', 'def')
@@ -61,6 +62,7 @@ def parse_query(query_str):
     (query_str, group_by_str) = parse_out_value(query_str, 'GROUP BY ', '[^ ]+', None)
     (query_str, extra_group_by_str) = parse_out_value(query_str, 'group by ', '[^ ]+', None)
     (query_str, sum_by_str) = parse_out_value(query_str, 'sum by ', '[^ ]+', None)
+    (query_str, avg_by_str) = parse_out_value(query_str, 'avg by ', '[^ ]+', None)
     if group_by_str is not None:
         query['group_by'] = group_by_str.split(',')
     elif extra_group_by_str is not None:
@@ -68,6 +70,8 @@ def parse_query(query_str):
         query['group_by'].extend(extra_group_by_str.split(','))
     if sum_by_str is not None:
         query['sum_by'] = sum_by_str.split(',')
+    if avg_by_str is not None:
+        query['avg_by'] = avg_by_str.split(',')
     for tag in query['group_by']:
         if tag.endswith('='):
             query['patterns'].append(tag)
@@ -282,6 +286,7 @@ def build_graphs_from_targets(targets, query={}):
     defaults = {
         'group_by': [],
         'sum_by': [],
+        'avg_by': [],
         'from': '-24hours',
         'to': 'now',
         'statement': 'graph',
@@ -293,6 +298,7 @@ def build_graphs_from_targets(targets, query={}):
         return (graphs, query)
     group_by = query['group_by']
     sum_by = query['sum_by']
+    avg_by = query['avg_by']
     # for each combination of values of tags from group_by, make 1 graph with
     # all targets that have these values. so for each graph, we have:
     # the "constants": tags in the group_by
@@ -323,9 +329,10 @@ def build_graphs_from_targets(targets, query={}):
         graphs[graph_key]['targets'].append(t)
 
     # sum targets together if appropriate
-    if len(query['sum_by']):
+    if (sum_by or avg_by):
         for (graph_key, graph_config) in graphs.items():
             graph_config['targets_sum_candidates'] = {}
+            graph_config['targets_avg_candidates'] = {}
             graph_config['normal_targets'] = []
             for target in graph_config['targets']:
                 # targets that can get summed together with other tags, must
@@ -337,13 +344,21 @@ def build_graphs_from_targets(targets, query={}):
                 # so for every group of sum_by tags and variables we build a
                 # list of targets that can be summed together
                 sum_constants = set(query['sum_by']).intersection(set(target['variables'].keys()))
-                if(sum_constants):
+                avg_constants = set(query['avg_by']).intersection(set(target['variables'].keys()))
+                if sum_constants:
                     sum_constants_str = '_'.join(sorted(sum_constants))
                     variables_str = '_'.join(['%s_%s' % (k, target['variables'][k]) for k in sorted(target['variables'].keys()) if k not in sum_constants])
                     sum_id = '%s__%s' % (sum_constants_str, variables_str)
                     if sum_id not in graphs[graph_key]['targets_sum_candidates']:
                         graphs[graph_key]['targets_sum_candidates'][sum_id] = []
                     graphs[graph_key]['targets_sum_candidates'][sum_id].append(target)
+                elif avg_constants:
+                    avg_constants_str = '_'.join(sorted(avg_constants))
+                    variables_str = '_'.join(['%s_%s' % (k, target['variables'][k]) for k in sorted(target['variables'].keys()) if k not in avg_constants])
+                    avg_id = '%s__%s' % (avg_constants_str, variables_str)
+                    if avg_id not in graphs[graph_key]['targets_avg_candidates']:
+                        graphs[graph_key]['targets_avg_candidates'][avg_id] = []
+                    graphs[graph_key]['targets_avg_candidates'][avg_id].append(target)
                 else:
                     graph_config['normal_targets'].append(target)
             graph_config['targets'] = graph_config['normal_targets']
@@ -358,6 +373,19 @@ def build_graphs_from_targets(targets, query={}):
                     }
                     for s_b in sum_by:
                         t['variables'][s_b] = 'multi (%s values)' % len(targets)
+
+                    graph_config['targets'].append(t)
+            for (avg_id, targets) in graphs[graph_key]['targets_avg_candidates'].items():
+                if (len(targets) == 1):
+                    graph_config['targets'].append(targets[0])
+                else:
+                    t = {
+                        'target': 'averageSeries(%s)' % (','.join([t['target'] for t in targets])),
+                        'graphite_metric': [t['graphite_metric'] for t in targets],
+                        'variables': targets[0]['variables']
+                    }
+                    for s_b in avg_by:
+                        t['variables'][s_b] = 'multi avg (%s values)' % len(targets)
 
                     graph_config['targets'].append(t)
 
