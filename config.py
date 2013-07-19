@@ -10,4 +10,4 @@ es_port = 9200
 # Don't edit after this line
 import urlparse
 graphite_url_render = urlparse.urljoin(graphite_url, "render/")
-graphite_url_metrics = urlparse.urljoin(graphite_url, "metrics", "index.json")
+graphite_url_metrics = urlparse.urljoin(graphite_url, "metrics/index.json")
