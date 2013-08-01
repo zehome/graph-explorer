@@ -1,12 +1,12 @@
 #!/usr/bin/env python2
-from bottle import route, template, request, static_file, redirect, response, default_app
-import config
+
 import preferences
 import structured_metrics
-from graphs import Graphs
-from backend import Backend, get_action_on_rules_match
-from simple_match import match
-from query import parse_query, normalize_query, parse_patterns
+import config
+from core.graphs import Graphs
+from core.query import parse_query, normalize_query, parse_patterns
+from core.simple_match import match
+from core.backend import get_action_on_rules_match
 import logging
 
 
@@ -16,73 +16,67 @@ errors = {}
 
 # will contain the latest data
 last_update = None
-
 logger = logging.getLogger('app')
-logger.setLevel(logging.DEBUG)
-chandler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-chandler.setFormatter(formatter)
-logger.addHandler(chandler)
-if config.log_file:
-    fhandler = logging.FileHandler(config.log_file)
-    fhandler.setFormatter(formatter)
-    logger.addHandler(fhandler)
-
-logger.debug('app starting')
-backend = Backend(config)
-s_metrics = structured_metrics.StructuredMetrics(config)
-graphs = Graphs()
-graphs.load_plugins()
-graphs_all = graphs.list_graphs()
 
 
-@route('<path:re:/assets/.*>')
-@route('<path:re:/timeserieswidget/.*js>')
-@route('<path:re:/timeserieswidget/.*css>')
-@route('<path:re:/timeserieswidget/timezone-js/src/.*js>')
-@route('<path:re:/timeserieswidget/tz/.*>')
-@route('<path:re:/DataTables/media/js/.*js>')
-@route('<path:re:/DataTablesPlugins/integration/bootstrap/.*js>')
-@route('<path:re:/DataTablesPlugins/integration/bootstrap/.*css>')
-def static(path):
-    return static_file(path, root='.')
+class GraphExplorer(object):
+    def __init__(self):
+        self.s_metrics = structured_metrics.StructuredMetrics(config)
+        self.graphs_all = []
+        logger.debug('app starting')
+        self.load()
 
+    def load(self):
+        graphs = Graphs()
+        graphs.load_plugins()
+        self.graphs_all = graphs.list_graphs()
 
-@route('/', method='GET')
-@route('/index', method='GET')
-@route('/index/', method='GET')
-@route('/index/<query:path>', method='GET')
-def index(query=''):
-    from suggested_queries import suggested_queries
-    body = template('templates/body.index', errors=errors, query=query, suggested_queries=suggested_queries)
-    return render_page(body)
+    def render_graphs(self, query):
+        query = parse_query(query)
+        (query, target_modifiers) = normalize_query(query)
+        patterns = parse_patterns(query)
+        # tags listing
+        tags = set()
+        targets_matching = self.s_metrics.matching(patterns)
+        for target in targets_matching.values():
+            for tag_name in target['tags'].keys():
+                tags.add(tag_name)
+        graphs_matching = match(self.graphs_all, patterns, True)
+        graphs_matching = build_graphs(graphs_matching, query)
+        stats = {'len_targets_all': self.s_metrics.count_metrics(),
+                 'len_graphs_all': len(self.graphs_all),
+                 'len_targets_matching': len(targets_matching),
+                 'len_graphs_matching': len(graphs_matching),
+                 }
+        graphs = []
+        targets_list = {}
+        # the code to handle different statements, and the view
+        # templates could be a bit prettier, but for now it'll do.
+        if query['statement'] == 'graph':
+            graphs_targets_matching = build_graphs_from_targets(
+                 targets_matching, query, target_modifiers)[0]
+            stats['len_graphs_targets_matching'] = len(graphs_targets_matching)
+            graphs_matching.update(graphs_targets_matching)
+            stats['len_graphs_matching_all'] = len(graphs_matching)
+            for key in sorted(graphs_matching.iterkeys()):
+                graphs.append((key, graphs_matching[key]))
+        elif query['statement'] == 'list':
+            # for now, only supports targets, not graphs
+            targets_list = targets_matching
+            stats['len_graphs_targets_matching'] = 0
+            stats['len_graphs_matching_all'] = 0
 
-
-@route('/dashboard/<dashboard_name>')
-def slash_dashboard(dashboard_name=None):
-    dashboard = template('templates/dashboards/%s' % dashboard_name, errors=errors)
-    return render_page(dashboard)
-
-
-def render_page(body, page='index'):
-    return unicode(template('templates/page', body=body, page=page, last_update=last_update))
-
-
-@route('/meta')
-def meta():
-    body = template('templates/body.meta', todo=template('templates/' + 'todo'.upper()))
-    return render_page(body, 'meta')
-
-
-# accepts comma separated list of metric_id's
-@route('/inspect/<metrics>')
-def inspect_metric(metrics=''):
-    metrics = map(s_metrics.load_metric, metrics.split(','))
-    args = {'errors': errors,
-            'metrics': metrics,
-            }
-    body = template('templates/body.inspect', args)
-    return render_page(body, 'inspect')
+        args = {'errors': errors,
+                'query': query,
+                'config': config,
+                'graphs': graphs,
+                'graphs_matching': graphs_matching,
+                'targets_list': targets_list,
+                'tags': tags,
+                'preferences': preferences
+                }
+        args.update(stats)
+        return args
 
 
 def build_graphs(graphs, query={}):
@@ -278,87 +272,5 @@ def build_graphs_from_targets(targets, query={}, target_modifiers=[]):
             else:
                 graphs[graph_key] = graph_option(graphs[graph_key])
     return (graphs, query)
-
-
-@route('/graphs/', method='POST')
-@route('/graphs/<query>', method='GET')  # used for manually testing
-def graphs(query=''):
-    '''
-    get all relevant graphs matching query,
-    graphs from structured_metrics targets, as well as graphs
-    defined in structured_metrics plugins
-    '''
-    if 'metrics_file' in errors:
-        return template('templates/graphs', errors=errors)
-    if not query:
-        query = request.forms.get('query')
-    if not query:
-        return template('templates/graphs', query=query, errors=errors)
-
-    return render_graphs(query)
-
-
-@route('/graphs_minimal/<query>', method='GET')
-def graphs_minimal(query=''):
-    '''
-    like graphs(), but without extra decoration, so can be used on dashboards
-    TODO dashboard should show any errors
-    '''
-    if not query:
-        return template('templates/graphs', query=query, errors=errors)
-    return render_graphs(query, minimal=True)
-
-
-def render_graphs(query, minimal=False):
-    query = parse_query(query)
-    (query, target_modifiers) = normalize_query(query)
-    patterns = parse_patterns(query)
-    tags = set()
-    targets_matching = s_metrics.matching(patterns)
-    for target in targets_matching.values():
-        for tag_name in target['tags'].keys():
-            tags.add(tag_name)
-    graphs_matching = match(graphs_all, patterns, True)
-    graphs_matching = build_graphs(graphs_matching, query)
-    stats = {'len_targets_all': s_metrics.count_metrics(),
-             'len_graphs_all': len(graphs_all),
-             'len_targets_matching': len(targets_matching),
-             'len_graphs_matching': len(graphs_matching),
-             }
-    out = ''
-    graphs = []
-    targets_list = {}
-    # the code to handle different statements, and the view
-    # templates could be a bit prettier, but for now it'll do.
-    if query['statement'] == 'graph':
-        graphs_targets_matching = build_graphs_from_targets(targets_matching, query, target_modifiers)[0]
-        stats['len_graphs_targets_matching'] = len(graphs_targets_matching)
-        graphs_matching.update(graphs_targets_matching)
-        stats['len_graphs_matching_all'] = len(graphs_matching)
-        if len(graphs_matching) > 0 and request.headers.get('X-Requested-With') != 'XMLHttpRequest':
-            out += template('templates/snippet.graph-deps')
-        for key in sorted(graphs_matching.iterkeys()):
-            graphs.append((key, graphs_matching[key]))
-    elif query['statement'] == 'list':
-        # for now, only supports targets, not graphs
-        targets_list = targets_matching
-        stats['len_graphs_targets_matching'] = 0
-        stats['len_graphs_matching_all'] = 0
-
-    args = {'errors': errors,
-            'query': query,
-            'config': config,
-            'graphs': graphs,
-            'targets_list': targets_list,
-            'tags': tags,
-            'preferences': preferences
-            }
-    args.update(stats)
-    if minimal:
-        out += template('templates/graphs_minimal', args)
-    else:
-        out += template('templates/graphs', args)
-    return out
-
 
 # vim: ts=4 et sw=4:

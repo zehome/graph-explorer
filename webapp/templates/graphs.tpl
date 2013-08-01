@@ -1,8 +1,8 @@
-%include templates/snippet.errors errors=errors
+%include webapp/templates/snippet.errors errors=errors
 % if 'query' in globals():
     % if not query:
         <div class="row">
-        % include templates/snippet.info msg='Empty query.  Nothing to display.'
+        % include webapp/templates/snippet.info msg='Empty query.  Nothing to display.'
         </div>
     % end
 
@@ -34,7 +34,7 @@
             # graphs from matching targets: {{len_graphs_targets_matching}}<br/>
             # total graphs: {{len_graphs_matching_all}}<br/>
         % for (k,v) in graphs:
-            % include templates/snippet.graph config=config, graph_key=k, graph_data=v, preferences=preferences
+            % include webapp/templates/snippet.graph config=config, graph_key=k, graph_data=v, preferences=preferences
         % end
         <!-- approximation of get_inspect_url(data, name) that works as long as list mode doesn't support sum by (or other kind of N metrics in 1 target) -->
         % for target_id in targets_list.iterkeys():
@@ -43,6 +43,6 @@
     % end
 % else:
     <div class="row">
-    % include templates/snippet.info msg='No query processed.  Nothing to display.'
+    % include webapp/templates/snippet.info msg='No query processed.  Nothing to display.'
     </div>
 % end

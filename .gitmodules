@@ -1,5 +1,5 @@
 [submodule "timeserieswidget"]
-	path = timeserieswidget
+	path = webapp/timeserieswidget
 	url = https://github.com/vimeo/timeserieswidget.git
 	pushurl = git@github.com:vimeo/timeserieswidget.git
 [submodule "structured_metrics/rawes"]

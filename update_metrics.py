@@ -1,10 +1,11 @@
 #!/usr/bin/env python2
+
 import os
 import sys
 import logging
 
 import config
-from backend import Backend
+from core.backend import Backend
 import structured_metrics
 
 os.chdir(os.path.dirname(__file__))

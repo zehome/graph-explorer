@@ -53,7 +53,7 @@
               <li><a href="/{{key}}">{{title}}</a></li>
 		% end
 	% end
-            % from dashboards import list_dashboards
+            % from webapp.dashboards import list_dashboards
           <li class="dropdown" id="preview-menu">
             <a class="dropdown-toggle" data-toggle="dropdown" href="#">Dashboards <b class="caret"></b></a>
             <ul class="dropdown-menu">
@@ -76,7 +76,7 @@
 
     <script src="../assets/js/jquery-1.7.2.js"></script>
     <script src="../assets/js/bootstrap.js"></script>
-    %include templates/snippet.graph-deps
+    %include webapp/templates/snippet.graph-deps
 
 {{!body}}
 
